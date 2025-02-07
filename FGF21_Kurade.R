@@ -1,9 +1,25 @@
 ####### MiSBE FGF21 Analyses-----
-## prepared by Mangesh Kurade & Alex Behnke
+## Prepared by Mangesh Kurade & Alex Behnke
 
 ## Interpolation for FGF21 from ELISA plates absorbance readings-----
 
-# load libraries
+## This script demonstrates the workflow used to interpolate protein concentration
+# from ELISA absorbance readings using data from Plate 8 as an example.
+
+# NOTE:
+#   - For each ELISA plate, samples are run in duplicates across two sub-plates,
+#     labeled as Plate8A and Plate8B (duplicate measurements).
+#   - This code processes both sub-plates simultaneously and later combines their
+#     results to obtain average protein concentrations.
+#
+#   - The same code skeleton was applied to all 12 ELISA plates.
+#     Each plate's analysis was executed separately with adjustments to:
+#       * File paths for input/output.
+#       * Platemap sheet numbers (if applicable).
+
+##########################################################################################################################################################################################################################
+
+# Load required libraries
 
 library(tidyverse)
 library(janitor)
@@ -18,7 +34,11 @@ install.packages("writexl")
 library(writexl)
 
 
-# platemap
+# ==============================================================================
+# PLATEMAP
+# ==============================================================================
+
+# Read the platemap for Plate 8. (Adjust the sheet number for other plates as needed)
 
 fgf_8_platemap <- readxl::read_xlsx("/Users/MangeshK/Desktop/Spectramax/FGF_Platemaps_All.xlsx" , sheet = 8)%>%
   pivot_longer(cols = -...1,names_to = "column", values_to = "sampleName")%>%
@@ -27,8 +47,12 @@ fgf_8_platemap <- readxl::read_xlsx("/Users/MangeshK/Desktop/Spectramax/FGF_Plat
   mutate(across('column', str_replace, 'C', '')) %>%
   unite(well, row, column, sep = "", remove = F)
 
+# ==============================================================================
+# READ AND PROCESS DATA
+# ==============================================================================
 
-# read data file
+
+# Read Plate 8 raw data file (which contains data for both sub-plates: A & B)
 
 fgf_8AB <- readxl::read_xlsx("/Users/MangeshK/Desktop/Spectramax/Plate 8/Plate 8AB.xlsx")
 
@@ -39,11 +63,14 @@ fgf_8A_540 <- fgf_8AB[3:10, 16:27]
 fgf_8B_450 <- fgf_8AB[15:22, 3:14]
 fgf_8B_540 <- fgf_8AB[15:22, 16:27]
 
+# Rename columns for consistency
+
 names(fgf_8A_450)[1:12] <- as.character(1:12)
 names(fgf_8A_540)[1:12] <- as.character(1:12)
 names(fgf_8B_450)[1:12] <- as.character(1:12)
 names(fgf_8B_540)[1:12] <- as.character(1:12)
 
+# Process data for Plate8A (450 and 540 readings)
 
 fgf_8A_450_final <- fgf_8A_450 %>%
   mutate_all(as.numeric) %>%
@@ -61,6 +88,8 @@ fgf_8A_540_final <- fgf_8A_540 %>%
   pivot_longer(cols = !row, names_to = "column", values_to = "OD_540") %>%
   unite(well, row, column, sep = "", remove = FALSE) %>%
   full_join(fgf_8_platemap,.)
+
+# Process data for Plate8B (450 and 540 readings)
 
 fgf_8B_450_final <- fgf_8B_450 %>%
   mutate_all(as.numeric) %>%
@@ -80,14 +109,18 @@ fgf_8B_540_final <- fgf_8B_540 %>%
   full_join(fgf_8_platemap,.)
 
 
-# background correction
+# ==============================================================================
+# BACKGROUND & BLANK CORRECTION
+# ==============================================================================
+
+# Background correction: subtract 540 nm absorbance from 450 nm absorbance
 
 fgf_8A_bgcorr <- full_join(fgf_8A_450_final, fgf_8A_540_final) %>%
   mutate(OD_bgcorr = OD_450 - OD_540)
 fgf_8B_bgcorr <- full_join(fgf_8B_450_final, fgf_8B_540_final) %>%
   mutate(OD_bgcorr = OD_450 - OD_540)
 
-# blank correction
+# Blank correction: subtract the blank reading from each well
 
 fgf_8A_blank <- fgf_8A_bgcorr$OD_bgcorr[fgf_8A_bgcorr$sampleName == "BLANK"]
 fgf_8A_blankcorr <- fgf_8A_bgcorr %>%
@@ -103,11 +136,17 @@ fgf_8B_blankcorr <- fgf_8B_bgcorr %>%
   rename (OD = OD_blankcorr) %>%
   mutate(plate = "B")
 
-# linear model
+# ==============================================================================
+# LINEAR MODEL FITTING & INTERPOLATION
+# ==============================================================================
+
+# Combine data from Plate8A and Plate8B for duplicate measurements
 
 fgf_8_all <- rbind(fgf_8A_blankcorr, fgf_8B_blankcorr) %>%
   mutate(OD = case_when(OD >= 0 ~ OD, TRUE ~ NA_real_)) %>%
   mutate(log_OD = ifelse(is.na(OD) | OD <= 0, NA_real_, log(OD)))
+
+# Define the standard samples and their known concentrations
 
 std <- fgf_8_all %>%
   filter(sampleName %in% c("STD 1", "STD 3", "STD 5", "STD 7")) %>%
@@ -119,9 +158,11 @@ std <- fgf_8_all %>%
   )) %>%
   mutate(log_conc = log(conc))
 
+# Fit a linear model on the logarithmic values of OD and concentration
 model <- lm(log_conc ~ log_OD, data = std)
 
-# interpolation
+# Interpolate unknown sample concentrations using the fitted model.
+# The two sub-plate measurements (from Plate8A and Plate8B) are later combined.
 
 log_OD <-  fgf_8_all$log_OD
 
@@ -137,12 +178,19 @@ plate8_interpolated <- fgf_8_all %>%
     TRUE ~ average_conc
   ))
 
+# ==============================================================================
+# OUTPUT RESULTS
+# ==============================================================================
+
+# Write the interpolated results for Plate 8 to an Excel file.
 
 write_xlsx(plate8_interpolated, "/Users/MangeshK/Desktop/Spectramax/Plate 8/plate8int.xlsx")
 
 
-
 ###  ----------- END OF INTERPOLATION CODE ----------- ###
+
+
+
 
 
 
@@ -357,7 +405,8 @@ variable_list <- c("Loneliness_Scale",
                    "MBI_Total", 
                    "Mdes_Negative", 
                    "LEQ_Stressful_Events", 
-                   "LEQ_Positive_Events", 
+                   "LEQ_Positive_Events",
+                   "LEQ_Negative_Events",
                    "PCL_Total", 
                    "STRAIN_Total", 
                    "STRAIN_Severity")
@@ -442,6 +491,7 @@ variable_list <- c("Loneliness_Scale",
                    "Mdes_Negative", 
                    "LEQ_Stressful_Events", 
                    "LEQ_Positive_Events", 
+                   "LEQ_Ngative_vents", 
                    "PCL_Total", 
                    "STRAIN_Total", 
                    "STRAIN_Severity"
